@@ -1,0 +1,6 @@
+[submodule "packages/duckdb-fork"]
+	path = packages/duckdb-fork
+	url = https://github.com/vergenzt/duckdb.git
+[submodule "packages/duckdb-macros-extension/extension-ci-tools"]
+	path = packages/duckdb-macros-extension/extension-ci-tools
+	url = https://github.com/duckdb/extension-ci-tools.git

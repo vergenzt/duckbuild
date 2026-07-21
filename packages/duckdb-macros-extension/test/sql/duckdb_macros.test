@@ -1,0 +1,23 @@
+# name: test/sql/duckdb_macros.test
+# description: test duckdb_macros extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT duckdb_macros('Sam');
+----
+Catalog Error: Scalar Function with name duckdb_macros does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require duckdb_macros
+
+# Confirm the extension works
+query I
+SELECT duckdb_macros('Sam');
+----
+...........🦆 Sam
+
+query I
+SELECT duckdb_macros_openssl_version('Michael') ILIKE 'DuckdbMacros Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
