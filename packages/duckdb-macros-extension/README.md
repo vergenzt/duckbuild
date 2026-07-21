@@ -23,19 +23,36 @@ macro grammar + transforms against it in `Load()`. **Nothing macro-specific is i
 ```json
 {"statements":[{"type":"CUSTOM_STATEMENT","tag":"macro_def",
   "named_param_map":[{"key":"x","value":1}],
-  "children":[{"class":"FUNCTION","function_name":"+","arguments":[
-    {"expression":{"class":"PARAMETER","type":"VALUE_PARAMETER","identifier":"x"}},
-    {"expression":{"class":"CONSTANT","value":1}}]}],
+  "children":[{"node_type":"EXPRESSION","node":{"class":"FUNCTION","function_name":"+","arguments":[
+    {"expression":{"class":"PARAMETER","identifier":"x"}},
+    {"expression":{"class":"CONSTANT","value":1}}]}}],
   "properties":"{\"name\":\"incr\",\"params\":[{\"name\":\"x\",\"type\":\"expr\"}],\"returning\":\"expr\"}"}]}
 ```
 
-`json_serialize_sql('SELECT incr!(a, b) FROM t')` → a `macro_ref` node with the two args as
-structured child expressions.
+A `returning query` macro stores its whole body as a **statement** child, not an expression:
+`json_serialize_sql('define macro recent!($tbl: ident) returning query as select 1 from foo')` →
+`children:[{"node_type":"STATEMENT","node":{ …full SELECT AST… }}]`. And
+`json_serialize_sql('SELECT incr!(a, b) FROM t')` → a `macro_ref` node with the args as children.
 
-**Done:** `define macro name!(...)` (typed params + return kind), `name!(...)` invocations,
-and `$x` metavariables inside bodies. Invocations and definitions parse to
-`macro_ref` / `macro_def` escape nodes (`ExtensionExpression` / `CustomStatement`) that
-round-trip through `json_serialize_sql`.
+**Done:** `define macro name!(...)` with typed params and a per-kind body (`returning expr` and
+`returning query` implemented), `name!(...)` invocations, and `$x` metavariables inside bodies —
+all round-tripping through `json_serialize_sql`.
+
+### Escape nodes hold arbitrary AST children (`ExtensionNode`)
+
+The escape nodes — `macro_ref` (`ExtensionExpression`) and `macro_def` (`CustomStatement`) — hold
+their children as `ExtensionNode`, a tagged holder over DuckDB's top-level parse hierarchies
+(`expression` / `query_node` / `table_ref` / `statement` / `type`). Each delegates to that
+hierarchy's own polymorphic serialization, so a child can be an expression, a whole query, a table
+ref, a type, or a statement, and serializes as a fully-structured JSON subtree. This is what lets
+macros occupy the wide variety of AST positions dbt macros do — not just expression slots.
+
+### Per-kind bodies
+
+Each `returning <kind>` is its own grammar rule, so `<body>` parses with the kind-appropriate
+sub-grammar (`expr` → an expression, `query` → a `SELECT`) and is stored as the matching
+`ExtensionNode`. This also enforces the fragment-kind keyword at parse time. Adding a kind is a new
+rule + the matching `ExtensionNode::From*` (e.g. `returning table as BaseTableRef` → `FromTableRef`).
 
 ### Metavariables reuse named parameters (no new node, no shadowing)
 
@@ -49,10 +66,11 @@ Disambiguation is deferred to **resolution** (`duckbuild-cli`): a `$x` inside a 
 resolve to exactly one of the macro's declared params (metavar namespace) or an enclosing
 parameter — name shadowing across the two namespaces is disallowed.
 
-**Not yet:** `$x` in *non-expression* positions (an `ident`/`type`/`table` metavar, e.g.
-`from $tbl`) still needs small grammar additions (reusing the parameter node, no new node type).
-Fragment kinds are currently accepted as any identifier at parse time (the fixed list below is
-not enforced); recursive/nested expansion and hygiene checks are CLI-side and unimplemented.
+**Not yet:** only the `expr` and `query` return kinds have rules so far (`ident`/`type`/`table`/
+`literal` follow the same one-rule-per-kind pattern). Parameter `:kind` annotations are still
+accepted as any identifier (not restricted to the fixed list). `$x` in *non-expression* positions
+(e.g. `from $tbl`) still needs small grammar additions (reusing the parameter node, no new node
+type). Recursive/nested expansion and hygiene checks are CLI-side and unimplemented.
 
 ---
 

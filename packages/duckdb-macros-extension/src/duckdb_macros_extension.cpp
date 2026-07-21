@@ -90,6 +90,14 @@ static unique_ptr<TransformResultValue> TransformDefineMacroQuery(PEGTransformer
 	return BuildMacroDef(list, "query", ExtensionNode::FromStatement(std::move(select)));
 }
 
+// ... 'returning' 'table' 'as' BaseTableRef  (body is a table reference)
+static unique_ptr<TransformResultValue> TransformDefineMacroTable(PEGTransformer &transformer,
+                                                                  ParseResult &parse_result) {
+	auto &list = parse_result.Cast<ListParseResult>();
+	auto table_ref = transformer.Transform<unique_ptr<TableRef>>(list.GetChild(10));
+	return BuildMacroDef(list, "table", ExtensionNode::FromTableRef(std::move(table_ref)));
+}
+
 //! Register the lexical-macro syntax with the PEG parser. Process-global + idempotent.
 //!
 //! Macro references use Rust-style `name!(...)`. Metavariables `$x` are NOT a distinct node: in
@@ -114,14 +122,18 @@ static void RegisterMacroParserExtension() {
 	    "DefineMacroExpr <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'expr' 'as' "
 	    "Expression\n"
 	    "DefineMacroQuery <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'query' 'as' "
-	    "SelectStatementInternal\n";
+	    "SelectStatementInternal\n"
+	    "DefineMacroTable <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'table' 'as' "
+	    "BaseTableRef\n";
 	// one statement rule per return kind (keyword-led, no collision)
 	ext.choice_extensions.push_back({"Statement", "DefineMacroExpr"});
 	ext.choice_extensions.push_back({"Statement", "DefineMacroQuery"});
+	ext.choice_extensions.push_back({"Statement", "DefineMacroTable"});
 	// `name!(...)` invocation as an expression atom (prepended, so it beats the `!` factorial reading)
 	ext.choice_extensions.push_back({"SingleExpression", "MacroInvocation"});
 	ext.transformers.emplace_back("DefineMacroExpr", TransformDefineMacroExpr);
 	ext.transformers.emplace_back("DefineMacroQuery", TransformDefineMacroQuery);
+	ext.transformers.emplace_back("DefineMacroTable", TransformDefineMacroTable);
 	ext.transformers.emplace_back("MacroInvocation", TransformMacroInvocation);
 	PEGParserExtensionRegistry::Get().Register(std::move(ext));
 }
