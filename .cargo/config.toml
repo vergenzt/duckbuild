@@ -1,0 +1,9 @@
+# Link duckbuild-cli's `duckdb` crate against the locally-built fork libduckdb (which carries the
+# parser-extension seam + escape-node ABI) instead of a bundled stock DuckDB.
+#
+# `relative = true` resolves these paths against this project root (the parent of `.cargo/`), so no
+# absolute paths are baked in. Build the fork/extension first
+# (packages/duckdb-macros-extension: `make release`) so the lib + header exist.
+[env]
+DUCKDB_LIB_DIR = { value = "packages/duckdb-macros-extension/build/release/src", relative = true }
+DUCKDB_INCLUDE_DIR = { value = "packages/duckdb-fork/src/include", relative = true }
