@@ -6,6 +6,7 @@
 .once stderr
 .print It will produce 'build.ninja' for running them.
 
+.bail on
 
 create function is_abs(path) as path like '/%';
 create function is_rel(path) as not path.is_abs();
@@ -88,25 +89,42 @@ create temp table sql_stmts as
 
 -- EXTRACT IMPORTS (attach '*.sql' ...)
 create temp table sql_imports as
-  from sql_stmts
-  select
-    filename,
-    stmt_id,
+  with recursive
 
-    stmt->>'$.info.parsed_path.value.value' as par_imported,
-    normalize_path(par_imported, parse_dirpath(filename)) as res_imported,
+    sql_imports as (
+      from sql_stmts
+      select
+        filename,
+        stmt_id,
+        stmt->>'$.info.parsed_path.value.value' as imported_rel,
+        normalize_path(imported_rel, coalesce(nullif(parse_dirpath(filename), ''), '.')) as imported,
+        coalesce(nullif(stmt->>'$.info.name', ''), parse_filename(imported, true)) as alias,
+      where
+        stmt->>'$.type' = 'ATTACH_STATEMENT' and
+        stmt->>'$.info.parsed_path.type' = 'VALUE_CONSTANT' and
+        stmt->>'$.info.parsed_path.value.type.id' = 'VARCHAR' and
+        imported like '%.sql'
+    ),
 
-    nullif(stmt->>'$.info.name', '') as par_alias,
-    coalesce(par_alias, parse_filename(par_imported, true)) as res_alias,
+    -- validate no circular imports
+    import_paths_cycle_check as (
+      from sql_imports select [filename, imported] as path
+      union all
+      from import_paths_cycle_check as import_paths
+      join sql_imports on import_paths.path[-1] = sql_imports.filename
+      select path.list_append(imported) as path
+      where
+        not path.list_contains(imported)
+        or error('Circular import(s) detected: {}'.format(
+          path[path.list_position(imported):].list_append(imported).array_to_string(' -> ')
+        ))
+    )
 
-  where
-    stmt->>'$.type' = 'ATTACH_STATEMENT' and
-    stmt->>'$.info.parsed_path.type' = 'VALUE_CONSTANT' and
-    stmt->>'$.info.parsed_path.value.type.id' = 'VARCHAR' and
-    par_imported like '%.sql'
+  from sql_imports, import_paths_cycle_check
+  select sql_imports.*
 ;
 
--- remove processed stmts
+-- remove processed import statements
 delete from sql_stmts using sql_imports as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
 
 
@@ -132,7 +150,7 @@ create temp table sql_sources as
     *
 ;
 
--- remove processed stmts
+-- remove processed source declarations
 delete from sql_stmts using sql_sources as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
 
 
@@ -199,19 +217,15 @@ create temp table sql_models as
 
   from sql_models_with_ctes
   select
-
     filename.qual_id(model_qualname) as rel_id,
-
     *,
-
     json_deserialize_sql(json_object('statements', json_array(json_object('node', model_query_ast)))) as model_query_sql,
 
   order by stmt_id
 ;
--- remove processed stmts
-delete from sql_stmts using sql_models as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
 
-from sql_models;
+-- remove processed model declarations
+delete from sql_stmts using sql_models as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
 
 create view sql_relations as (
   select 'source' as rel_kind, * from sql_sources
