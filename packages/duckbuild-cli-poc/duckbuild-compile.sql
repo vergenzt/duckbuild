@@ -66,6 +66,13 @@ create function qual_id(filename, qualname) as
 
 -- BEGIN SQL PARSING
 
+/*
+Note: Throughout, stmt_id is a tuple of integers based on the lexical position of a statement within its file or nested
+query; eventually, when a model stmt contains ctes, all ctes go under [<...model_stmt_id>, 0, <cte_id>], and the final query
+goes under [<...stmt_id>, 1]. this way, `stmt_id` is a topographic (and lexical) ordering of the statements within a
+file (helpful since ctes can only refer to previously declared ctes).
+*/
+
 create temp table sql_stmts as
   from
     read_text('src/**/*.sql'),
@@ -74,12 +81,7 @@ create temp table sql_stmts as
     )
   select
     filename.regexp_replace('^src/', '') as filename,
-
-    /* stmt_id is a tuple of integers; eventually, when a model stmt contains ctes, all ctes go under [<...stmt_id>, 0,
-    <cte_id>], and the final query goes under [<...stmt_id>, 1]. this way, `stmt_id` is a topographic (and lexical)
-    ordering of the statements within a file (helpful since ctes can only refer to previously declared ctes). */
     [key::integer] as stmt_id,
-
     value as stmt
 ;
 
@@ -103,6 +105,7 @@ create temp table sql_imports as
     stmt->>'$.info.parsed_path.value.type.id' = 'VARCHAR' and
     par_imported like '%.sql'
 ;
+
 -- remove processed stmts
 delete from sql_stmts using sql_imports as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
 
@@ -125,7 +128,7 @@ create temp table sql_sources as
   )
 
   select
-    filename.qual_id(source_qualname) as source_id,
+    filename.qual_id(source_qualname) as rel_id,
     *
 ;
 
@@ -197,7 +200,7 @@ create temp table sql_models as
   from sql_models_with_ctes
   select
 
-    filename.qual_id(model_qualname) as model_id,
+    filename.qual_id(model_qualname) as rel_id,
 
     *,
 
@@ -210,28 +213,30 @@ delete from sql_stmts using sql_models as parsed where sql_stmts.filename = pars
 
 from sql_models;
 
+create view sql_relations as (
+  select 'source' as rel_kind, * from sql_sources
+  union all by name
+  select 'model' as rel_kind, * from sql_models
+);
 
 -- write model queries into build folder
-copy (from sql_models select model_id, model_query_sql) to 'build' (
+copy (from sql_models select rel_id, model_query_sql) to 'build' (
   format csv, header false, escape '', quote '', overwrite_or_ignore,
-  partition_by ('model_id'), filename_pattern 'query', file_extension 'sql',
+  partition_by ('rel_id'), filename_pattern 'query', file_extension 'sql',
   return_files true,
 );
 
 -- write model query asts into build folder
-copy sql_models to 'build' (
+copy sql_relations to 'build' (
   format json,
-  partition_by ('model_id'), write_partition_columns true, overwrite_or_ignore,
-  filename_pattern 'model', file_extension 'json',
+  partition_by ('rel_id'), write_partition_columns true, overwrite_or_ignore,
+  filename_pattern 'rel', file_extension 'json',
   return_files true,
 );
 
-
-
--- -- -- write the actual ninja build
--- -- copy (
--- --   from sql_models
--- --   select
--- --     format('build )
-
--- -- )
+-- write the actual ninja build
+-- copy (
+--   from sql_models
+--   select
+--     format('build )
+-- )
