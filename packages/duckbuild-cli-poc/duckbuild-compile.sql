@@ -220,16 +220,16 @@ create view sql_relations as (
 );
 
 -- write model queries into build folder
-copy (from sql_models select rel_id, model_query_sql) to 'build' (
+copy (from sql_relations select rel_kind, rel_id, model_query_sql where rel_kind = 'model') to 'build' (
   format csv, header false, escape '', quote '', overwrite_or_ignore,
-  partition_by ('rel_id'), filename_pattern 'query', file_extension 'sql',
+  partition_by ('rel_kind', 'rel_id'), filename_pattern 'query', file_extension 'sql',
   return_files true,
 );
 
 -- write model query asts into build folder
 copy sql_relations to 'build' (
   format json,
-  partition_by ('rel_id'), write_partition_columns true, overwrite_or_ignore,
+  partition_by ('rel_kind', 'rel_id'), write_partition_columns true, overwrite_or_ignore,
   filename_pattern 'rel', file_extension 'json',
   return_files true,
 );
