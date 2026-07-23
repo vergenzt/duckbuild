@@ -1,10 +1,11 @@
 #!/usr/bin/env duckdb -f
-.once stderr
+.output /dev/stderr
 .print === duckbuild proof of concept ===
-.once stderr
+.print
 .print Run this from the directory containing the SQL files you want to compile.
-.once stderr
+.print
 .print It will produce 'build.ninja' for running them.
+.print
 
 .bail on
 
@@ -74,55 +75,88 @@ goes under [<...stmt_id>, 1]. this way, `stmt_id` is a topographic (and lexical)
 file (helpful since ctes can only refer to previously declared ctes).
 */
 
+create temp table sql_files as (
+  from read_text('src/**/*.sql')
+  select
+    filename.regexp_replace('^src/', '') as filename,
+    content
+);
+
 create temp table sql_stmts as
   from
-    read_text('src/**/*.sql'),
+    sql_files,
     json_each(
       json_serialize_sql(content)->'$.statements[*]'
     )
   select
-    filename.regexp_replace('^src/', '') as filename,
+    filename,
     [key::integer] as stmt_id,
     value as stmt
 ;
 
-
 -- EXTRACT IMPORTS (attach '*.sql' ...)
 create temp table sql_imports as
-  with recursive
+  from sql_stmts
+  select
+    filename,
+    stmt_id,
+    stmt->>'$.info.parsed_path.value.value' as imported_rel,
+    normalize_path(imported_rel, coalesce(nullif(parse_dirpath(filename), ''), '.')) as imported,
+    coalesce(nullif(stmt->>'$.info.name', ''), parse_filename(imported, true)) as alias,
+  where
+    stmt->>'$.type' = 'ATTACH_STATEMENT' and
+    stmt->>'$.info.parsed_path.type' = 'VALUE_CONSTANT' and
+    stmt->>'$.info.parsed_path.value.type.id' = 'VARCHAR' and
+    imported like '%.sql'
+;
 
-    sql_imports as (
-      from sql_stmts
-      select
-        filename,
-        stmt_id,
-        stmt->>'$.info.parsed_path.value.value' as imported_rel,
-        normalize_path(imported_rel, coalesce(nullif(parse_dirpath(filename), ''), '.')) as imported,
-        coalesce(nullif(stmt->>'$.info.name', ''), parse_filename(imported, true)) as alias,
-      where
-        stmt->>'$.type' = 'ATTACH_STATEMENT' and
-        stmt->>'$.info.parsed_path.type' = 'VALUE_CONSTANT' and
-        stmt->>'$.info.parsed_path.value.type.id' = 'VARCHAR' and
-        imported like '%.sql'
+create temp table sql_import_validations as
+  with
+
+    validate_circular_imports as (
+      with recursive
+        import_paths as (
+          from sql_imports
+          select
+            [filename, imported] as path,
+            imported = filename as is_cycle,
+          union all
+          select
+            path.list_append(imported) as path,
+            path.list_contains(imported) as is_cycle,
+          from import_paths join sql_imports on import_paths.path[-1] = sql_imports.filename
+          where not is_cycle
+        ),
+        trimmed_cycles as (
+          select distinct path[path.list_position(path[-1]):] as path
+          from import_paths
+          where is_cycle
+        )
+      from trimmed_cycles
+      select path[0], 'Circular import detected: {}'.format(path.array_to_string(' -> '))
     ),
 
-    -- validate no circular imports
-    import_paths_cycle_check as (
-      from sql_imports select [filename, imported] as path
-      union all
-      from import_paths_cycle_check as import_paths
-      join sql_imports on import_paths.path[-1] = sql_imports.filename
-      select path.list_append(imported) as path
-      where
-        not path.list_contains(imported)
-        or error('Circular import(s) detected: {}'.format(
-          path[path.list_position(imported):].list_append(imported).array_to_string(' -> ')
-        ))
+    validate_imports_exist(filename, error_msg) as (
+      from sql_imports
+      anti join sql_files on sql_imports.imported = sql_files.filename
+      select filename, 'Import `{}` (resolved: `{}`) does not exist!'.format(imported_rel, imported)
+    ),
+
+    validations(filename, error_msg) as (
+      from validate_circular_imports union all
+      from validate_imports_exist
     )
 
-  from sql_imports, import_paths_cycle_check
-  select sql_imports.*
+  from validations
 ;
+
+.print
+.print Import errors:
+from sql_import_validations;
+.print
+.print Imports:
+from sql_imports;
+.print
 
 -- remove processed import statements
 delete from sql_stmts using sql_imports as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
@@ -233,19 +267,20 @@ create view sql_relations as (
   select 'model' as rel_kind, * from sql_models
 );
 
+.print Relations:
+from sql_relations;
+
 -- write model queries into build folder
 copy (from sql_relations select rel_kind, rel_id, model_query_sql where rel_kind = 'model') to 'build' (
   format csv, header false, escape '', quote '', overwrite_or_ignore,
-  partition_by ('rel_kind', 'rel_id'), filename_pattern 'query', file_extension 'sql',
-  return_files true,
+  partition_by ('rel_kind', 'rel_id'), filename_pattern 'query', file_extension 'sql'
 );
 
 -- write model query asts into build folder
 copy sql_relations to 'build' (
   format json,
   partition_by ('rel_kind', 'rel_id'), write_partition_columns true, overwrite_or_ignore,
-  filename_pattern 'rel', file_extension 'json',
-  return_files true,
+  filename_pattern 'rel', file_extension 'json'
 );
 
 -- write the actual ninja build
