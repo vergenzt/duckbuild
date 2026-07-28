@@ -9,6 +9,9 @@
 
 .bail on
 
+/* when a model file contains a bare `select`, what qualname should it be associated with in the file? */
+set variable default_qualname = 'main';
+
 create function is_abs(path) as path like '/%';
 create function is_rel(path) as not path.is_abs();
 create function abs(path) as
@@ -43,12 +46,22 @@ create function relative_to(path, base) as
   else base || '/' || path end
 ;
 
-create function qualname(name_parts) as
-  list_aggregate(
-    from_json(name_parts, '["VARCHAR"]'),
-    'string_agg',
-    '.'
+set variable duckdb_keywords = (from duckdb_keywords() select list(keyword_name));
+
+create function qualname(qualpath) as
+  from_json(qualpath, '["VARCHAR"]')
+  .list_transform(lambda name:
+    -- https://duckdb.org/docs/lts/sql/dialect/keywords_and_identifiers
+    case when
+      getvariable('duckdb_keywords').list_contains(name)
+      or not name.regexp_matches('^[a-zA-Z]\S+$')
+    then
+      '"' || name.replace('"', '""') || '"'
+    else
+      name
+    end
   )
+  .list_aggregate('string_agg', '.')
 ;
 
 create function qual_id(filename, qualname) as
@@ -57,13 +70,26 @@ create function qual_id(filename, qualname) as
     error(
       'Model/source name `' || qualname || '` in file `' || filename || '` is not unique!' || (
         case
-        when qualname = 'default'
-        then ' (Note that bare SQL statements get assigned the name `default`.)'
+        when qualname = getvariable('default_qualname')
+        then format(' (Note that bare SQL statements get assigned the name `{}`.)', getvariable('default_qualname'))
         end
       )
     )
   else filename || '#' || qualname
   end
+;
+
+create function manifest_sql(ast) as
+  case when ast is null then null
+  else json_deserialize_sql(
+    json_object('statements', json_array(
+      case
+      when (ast->>'$.type') = 'SELECT_NODE'
+      then json_object('node', ast)
+      else ast
+      end
+    ))
+  ) end
 ;
 
 -- BEGIN SQL PARSING
@@ -164,24 +190,18 @@ delete from sql_stmts using sql_imports as parsed where sql_stmts.filename = par
 
 -- EXTRACT SOURCE DECLARATIONS (create table (not as))
 create temp table sql_sources as
-  from (
-    from sql_stmts
-    select
-        filename,
-        stmt_id,
-
-        (stmt->'$.info.qualified_name.path').qualname() as source_qualname,
-        stmt as ctas_info,
-
-    where
-      (stmt->>'$.type') = 'CREATE_STATEMENT' and
-      (stmt->>'$.info.type') = 'TABLE_ENTRY' and
-      (stmt->'$.info.query') = 'null'
-  )
-
+  from sql_stmts
   select
-    filename.qual_id(source_qualname) as rel_id,
-    *
+      filename,
+      stmt_id,
+
+      (stmt->'$.info.qualified_name.path').qualname() as rel_qualname,
+      stmt as rel_ct_ast,
+
+  where
+    (stmt->>'$.type') = 'CREATE_STATEMENT' and
+    (stmt->>'$.info.type') = 'TABLE_ENTRY' and
+    (stmt->'$.info.query') = 'null'
 ;
 
 -- remove processed source declarations
@@ -198,14 +218,18 @@ create temp table sql_models as
       select
         filename,
         stmt_id.list_append(1) as stmt_id,
-        coalesce(stmt->'$.info.qualified_name.path', '["default"]').qualname() as model_qualname,
-        coalesce(stmt->'$.info.query.node', stmt->'$.node') as model_query_ast,
+        coalesce(stmt->'$.info.qualified_name.path', json_array(getvariable('default_qualname'))) as qualpath,
+        qualpath.qualname() as rel_qualname,
+        coalesce(stmt->'$.info.query.node', stmt->'$.node') as rel_select_ast,
 
-        case model_qualname
-        when 'default' then null
-        else json_merge_patch(stmt, '{"info":{"query": null}}')
-        end
-        as ctas_info,
+        json_merge_patch(
+          coalesce(
+            case when stmt->>'$.type' = 'CREATE_STATEMENT' then stmt end, /* use original "create table" statement if exists */
+            json_serialize_sql('create table ' || rel_qualname || ' as from foo')->'$.statements[0]' /* else make a simple one */
+          ),
+          '{"info":{"query": null}}' /* but always wipe out any "as <select...>" suffix */
+        )
+        as rel_ct_ast,
 
       where
         ( /* create table ... as ... */
@@ -232,12 +256,12 @@ create temp table sql_models as
         /* recurse into ctes */
         from
           sql_models_with_ctes_impl,
-          json_each(model_query_ast->'$.cte_map.map[*]')
+          json_each(rel_select_ast->'$.cte_map.map[*]')
         select
           sql_models_with_ctes_impl.* replace(
             stmt_id[:-2].list_append(0).list_append(key::integer) as stmt_id, /* remove .1 and append .0.<cte_index> to stmt_id */
-            model_qualname || '.' || (value->>'$.key'::text) as model_qualname, /* append CTE name to qualname */
-            value->>'$.value.query_node' as model_query_ast, /* extract cte query itself */
+            rel_qualname || '^' || (value->>'$.key'::text) as rel_qualname, /* append CTE name to qualname */
+            value->>'$.value.query_node' as rel_select_ast, /* extract cte query itself */
             json_merge_patch(value->'$.value', json('{"query_node":null}')) as cte_info, /* capture cte ast info (without query) */
           )
       )
@@ -245,47 +269,82 @@ create temp table sql_models as
       from sql_models_with_ctes_impl
       select * replace (
         /* remove ctes from query asts now since they're fully captured elsewhere */
-        json_merge_patch(model_query_ast, '{"cte_map":{"map":[]}}') as model_query_ast,
+        json_merge_patch(rel_select_ast, '{"cte_map":{"map":[]}}') as rel_select_ast,
       )
     )
 
   from sql_models_with_ctes
-  select
-    filename.qual_id(model_qualname) as rel_id,
-    *,
-    json_deserialize_sql(json_object('statements', json_array(json_object('node', model_query_ast)))) as model_query_sql,
-
   order by stmt_id
 ;
 
 -- remove processed model declarations
-delete from sql_stmts using sql_models as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id;
+delete from sql_stmts using sql_models as parsed where sql_stmts.filename = parsed.filename and sql_stmts.stmt_id = parsed.stmt_id[:1];
 
 create view sql_relations as (
-  select 'source' as rel_kind, * from sql_sources
-  union all by name
-  select 'model' as rel_kind, * from sql_models
+  from (
+    from (
+      select 'source' as rel_kind, * from sql_sources
+      union all by name
+      select 'model' as rel_kind, * from sql_models
+    )
+    select
+      *,
+      case when rel_select_ast is null then null
+      else json_merge_patch(rel_ct_ast, json_object('info', json_object('query', json_object('node', rel_select_ast))))
+      end as rel_ctas_ast,
+  )
+
+  select
+    rel_kind,
+    filename.qual_id(rel_qualname) as rel_id,
+
+    columns(lambda c: c not like 'rel_%_ast' and c != 'rel_kind'),
+
+    manifest_sql(columns('^rel_(\w+)_ast$')) as 'rel_\1_sql',
+
+  order by
+    filename,
+    stmt_id,
 );
+
 
 .print Relations:
 from sql_relations;
 
--- write model queries into build folder
-copy (from sql_relations select rel_kind, rel_id, model_query_sql where rel_kind = 'model') to 'build' (
-  format csv, header false, escape '', quote '', overwrite_or_ignore,
-  partition_by ('rel_kind', 'rel_id'), filename_pattern 'query', file_extension 'sql'
-);
-
--- write model query asts into build folder
+-- write relation json info into build folder
 copy sql_relations to 'build' (
   format json,
   partition_by ('rel_kind', 'rel_id'), write_partition_columns true, overwrite_or_ignore,
   filename_pattern 'rel', file_extension 'json'
 );
 
--- write the actual ninja build
--- copy (
---   from sql_models
---   select
---     format('build )
--- )
+-- write queries into build folder
+copy (
+
+  from (
+    unpivot sql_relations
+    on columns('rel_.*_sql')
+    into name rel_stmt_kind_col value rel_stmt_sql
+  )
+  select
+    rel_kind,
+    rel_id,
+    rel_stmt_kind_col.regexp_replace('^rel_(\w+)_sql$', '\1') as rel_stmt_kind,
+    rel_stmt_sql,
+
+  where
+    rel_stmt_sql is not null
+
+  qualify
+    count(*) over (partition by rel_kind, rel_id, rel_stmt_kind) = 1
+    or error('rel_stmt_kind ' || rel_stmt_kind || ' not unique!')
+
+) to 'build' (
+  filename_pattern 'query', file_extension 'sql', partition_by ('rel_kind', 'rel_id', 'rel_stmt_kind'),
+  format csv, header false, escape '', quote '', overwrite_or_ignore,
+);
+
+-- -- write the actual ninja build
+-- create temp table build_rules as
+--   from sql_relations
+--   left join sql_imports using (filename)

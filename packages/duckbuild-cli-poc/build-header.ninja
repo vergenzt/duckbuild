@@ -1,0 +1,17 @@
+output-format = parquet
+output-options =
+
+pool sql
+	depth = 8
+
+rule execute-sql
+	command = duckdb -f $in
+	pool = sql
+
+#build \
+# rel_kind=model/rel_id=marts%2Fcustomers.sql%23default/result0.${output-format} \
+# : \
+# execute-sql \
+# src/marts/customers.sql \
+# | \
+# src/staging.sql

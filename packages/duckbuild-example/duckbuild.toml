@@ -1,3 +1,23 @@
 [project]
 name = "duckbuild-example"
 description = "Example project showing how duckbuild projects might be structured"
+
+[targets]
+output-path = "build/output"
+output-type = "parquet"
+
+[targets.dev]
+source-bindings = [
+  {
+    pattern = "sources\\.raw_(.*)",
+    data-path = "seeds/$1.csv",
+  },
+]
+
+[targets.prod]
+source-bindings = [
+  {
+    pattern = "sources\\.raw_(.*)",
+    data-path = "s3://my-bucket/path/$1.parquet",
+  },
+]
