@@ -11,13 +11,68 @@ Catalog Error: Scalar Function with name duckdb_macros does not exist!
 # Require statement will ensure this test is run with this extension loaded
 require duckdb_macros
 
+require json
+
 # Confirm the extension works
 query I
 SELECT duckdb_macros('Sam');
 ----
 ...........🦆 Sam
 
+# Macro syntax is only recognized once the grammar extension is activated
 query I
-SELECT duckdb_macros_openssl_version('Michael') ILIKE 'DuckdbMacros Michael, my linked OpenSSL version is OpenSSL%';
+SELECT json_serialize_sql('SELECT add_one!(a) FROM t')::JSON->>'error';
 ----
 true
+
+statement ok
+SET active_grammar_extensions = ['duckdb_macros'];
+
+# Macro invocation parses to an EXTENSION expression carrying the arguments
+query IIII
+SELECT
+	s->>'$.node.select_list[0].class',
+	s->>'$.node.select_list[0].tag',
+	s->>'$.node.select_list[0].properties',
+	json_array_length(s->'$.node.select_list[0].children')
+FROM (SELECT json_serialize_sql('SELECT add_one!(a, 2) FROM t')::JSON->'$.statements[0]' AS s);
+----
+EXTENSION	macro_ref	{"name":"add_one"}	2
+
+# A trailing `!` without parentheses is still factorial
+query I
+SELECT 5!;
+----
+120
+
+# Macro invocations are parsed but never bound
+statement error
+SELECT add_one!(1);
+----
+Unimplemented expression class
+
+# Each `returning <kind>` stores its body as the matching AST node type
+query III
+SELECT
+	s->>'$.type',
+	s->>'$.properties',
+	s->>'$.children[0].node_type'
+FROM (SELECT json_serialize_sql('define macro add_one!($x: expr) returning expr as $x + 1')::JSON->'$.statements[0]' AS s);
+----
+CUSTOM_STATEMENT	{"name":"add_one","params":[{"name":"x","type":"expr"}],"returning":"expr"}	EXPRESSION
+
+query II
+SELECT
+	s->>'$.properties',
+	s->>'$.children[0].node_type'
+FROM (SELECT json_serialize_sql('define macro q!() returning query as SELECT 1')::JSON->'$.statements[0]' AS s);
+----
+{"name":"q","params":[],"returning":"query"}	STATEMENT
+
+query II
+SELECT
+	s->>'$.properties',
+	s->>'$.children[0].node_type'
+FROM (SELECT json_serialize_sql('define macro tb!() returning table as foo.bar')::JSON->'$.statements[0]' AS s);
+----
+{"name":"tb","params":[],"returning":"table"}	TABLE_REF

@@ -6,7 +6,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
-#include "duckdb/parser/peg/peg_parser_extension.hpp"
+#include "duckdb/parser/grammar_extension.hpp"
 #include "duckdb/parser/extension_node.hpp"
 #include "duckdb/parser/expression/extension_expression.hpp"
 #include "duckdb/parser/statement/custom_statement.hpp"
@@ -37,7 +37,8 @@ static unique_ptr<TransformResultValue> TransformMacroInvocation(PEGTransformer 
 	auto &opt = list.Child<OptionalParseResult>(3);
 	if (opt.HasResult()) {
 		for (auto &arg : PEGTransformerFactory::ExtractParseResultsFromList(opt.GetResult())) {
-			args.push_back(ExtensionNode::FromExpression(transformer.Transform<unique_ptr<ParsedExpression>>(arg.get())));
+			args.push_back(
+			    ExtensionNode::FromExpression(transformer.Transform<unique_ptr<ParsedExpression>>(arg.get())));
 		}
 	}
 	auto node = make_uniq<ExtensionExpression>("macro_ref", std::move(args), "{\"name\":\"" + name + "\"}");
@@ -67,9 +68,9 @@ static unique_ptr<TransformResultValue> BuildMacroDef(ListParseResult &list, con
 
 	vector<ExtensionNode> children;
 	children.push_back(std::move(body));
-	auto stmt = make_uniq<CustomStatement>(
-	    "macro_def", std::move(children),
-	    "{\"name\":\"" + name + "\",\"params\":" + params_json + ",\"returning\":\"" + returning + "\"}");
+	auto stmt = make_uniq<CustomStatement>("macro_def", std::move(children),
+	                                       "{\"name\":\"" + name + "\",\"params\":" + params_json +
+	                                           ",\"returning\":\"" + returning + "\"}");
 	unique_ptr<SQLStatement> result = std::move(stmt);
 	return make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(std::move(result));
 }
@@ -98,7 +99,12 @@ static unique_ptr<TransformResultValue> TransformDefineMacroTable(PEGTransformer
 	return BuildMacroDef(list, "table", ExtensionNode::FromTableRef(std::move(table_ref)));
 }
 
-//! Register the lexical-macro syntax with the PEG parser. Process-global + idempotent.
+template <unique_ptr<TransformResultValue> (*FINALIZE)(PEGTransformer &, ParseResult &)>
+static unique_ptr<TransformProcess> StartTransform(PEGTransformer &transformer, ParseResult &parse_result) {
+	return make_uniq<FinalizeTransformProcess>(transformer, parse_result, FINALIZE);
+}
+
+//! The lexical-macro syntax, as a grammar extension (enable with `SET active_grammar_extensions = ['duckdb_macros']`).
 //!
 //! Macro references use Rust-style `name!(...)`. Metavariables `$x` are NOT a distinct node: in
 //! expression positions they parse as DuckDB's native named parameters (ParameterExpression), so
@@ -108,38 +114,40 @@ static unique_ptr<TransformResultValue> TransformDefineMacroTable(PEGTransformer
 //!
 //! Each `returning <kind>` is its own statement rule, so the body parses with the kind-appropriate
 //! sub-grammar and is stored as the matching ExtensionNode (any AST hierarchy, not just expressions).
-static void RegisterMacroParserExtension() {
-	static bool registered = false;
-	if (registered) {
-		return;
+class MacroGrammarExtension final : public GrammarExtension {
+public:
+	MacroGrammarExtension() : GrammarExtension("duckdb_macros", "Lexical macro definitions and `name!(...)` calls") {
 	}
-	registered = true;
 
-	PEGParserExtension ext;
-	ext.grammar =
-	    "MacroInvocation <- Identifier '!' '(' List(Expression)? ')'\n"
-	    "MacroParam <- '$' Identifier ':' Identifier\n"
-	    "DefineMacroExpr <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'expr' 'as' "
-	    "Expression\n"
-	    "DefineMacroQuery <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'query' 'as' "
-	    "SelectStatementInternal\n"
-	    "DefineMacroTable <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'table' 'as' "
-	    "BaseTableRef\n";
-	// one statement rule per return kind (keyword-led, no collision)
-	ext.choice_extensions.push_back({"Statement", "DefineMacroExpr"});
-	ext.choice_extensions.push_back({"Statement", "DefineMacroQuery"});
-	ext.choice_extensions.push_back({"Statement", "DefineMacroTable"});
-	// `name!(...)` invocation as an expression atom (prepended, so it beats the `!` factorial reading)
-	ext.choice_extensions.push_back({"SingleExpression", "MacroInvocation"});
-	ext.transformers.emplace_back("DefineMacroExpr", TransformDefineMacroExpr);
-	ext.transformers.emplace_back("DefineMacroQuery", TransformDefineMacroQuery);
-	ext.transformers.emplace_back("DefineMacroTable", TransformDefineMacroTable);
-	ext.transformers.emplace_back("MacroInvocation", TransformMacroInvocation);
-	PEGParserExtensionRegistry::Get().Register(std::move(ext));
-}
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::AddRule("MacroInvocation <- Identifier '!' '(' List(Expression)? ')'",
+		                                         StartTransform<TransformMacroInvocation>));
+		changes.push_back(GrammarChange::AddRule("MacroParam <- '$' Identifier ':' Identifier"));
+		changes.push_back(GrammarChange::AddRule(
+		    "DefineMacroExpr <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'expr' 'as' "
+		    "Expression",
+		    StartTransform<TransformDefineMacroExpr>));
+		changes.push_back(GrammarChange::AddRule(
+		    "DefineMacroQuery <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'query' 'as' "
+		    "SelectStatementInternal",
+		    StartTransform<TransformDefineMacroQuery>));
+		changes.push_back(GrammarChange::AddRule(
+		    "DefineMacroTable <- 'define' 'macro' Identifier '!' '(' List(MacroParam)? ')' 'returning' 'table' 'as' "
+		    "BaseTableRef",
+		    StartTransform<TransformDefineMacroTable>));
+		// one statement rule per return kind (keyword-led, no collision)
+		changes.push_back(GrammarChange::PrependChoice("Statement", "DefineMacroExpr"));
+		changes.push_back(GrammarChange::PrependChoice("Statement", "DefineMacroQuery"));
+		changes.push_back(GrammarChange::PrependChoice("Statement", "DefineMacroTable"));
+		// prepended, so `name!(...)` beats the `!` factorial reading
+		changes.push_back(GrammarChange::PrependChoice("SingleExpression", "MacroInvocation"));
+		return changes;
+	}
+};
 
 static void LoadInternal(ExtensionLoader &loader) {
-	RegisterMacroParserExtension();
+	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<MacroGrammarExtension>());
 
 	// Register a scalar function
 	auto duckdb_macros_scalar_function =
