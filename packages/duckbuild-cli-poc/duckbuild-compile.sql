@@ -179,7 +179,11 @@ create temp table sql_import_validations as
 .print
 .print Import errors:
 from sql_import_validations;
+.mode lines
+from sql_import_validations select error('Import errors!');
+.mode duckbox
 .print
+
 .print Imports:
 from sql_imports;
 .print
