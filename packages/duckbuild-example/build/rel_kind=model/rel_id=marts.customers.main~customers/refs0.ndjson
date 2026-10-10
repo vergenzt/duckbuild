@@ -1,0 +1,1 @@
+{"ref_id":"staging.stg_customers","ref_kind":"model","rel_table_ref_path":"$.from_table","ref_table_name":"stg_customers","ref_schema_name":"staging","import_stmt_id":[0]}

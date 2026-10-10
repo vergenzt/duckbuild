@@ -1,0 +1,1 @@
+{"ref_id":"staging.stg_payments","ref_kind":"model","rel_table_ref_path":"$.from_table.source","ref_table_name":"stg_payments","ref_schema_name":"staging","import_stmt_id":[0]}

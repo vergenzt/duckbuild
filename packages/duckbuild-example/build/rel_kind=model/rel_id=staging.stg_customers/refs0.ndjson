@@ -1,0 +1,1 @@
+{"ref_id":"sources.raw_customers","ref_kind":"source","rel_table_ref_path":"$.from_table","ref_table_name":"raw_customers","ref_schema_name":"sources","import_stmt_id":[0]}
