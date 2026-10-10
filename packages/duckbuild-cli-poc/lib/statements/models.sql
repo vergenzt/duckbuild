@@ -11,7 +11,17 @@ create temp table sql_models_toplevel_from_ctas as
   where
     (stmt->>'$.type') = 'CREATE_STATEMENT' and
     (stmt->>'$.info.type') = 'TABLE_ENTRY' and
-    (stmt->'$.info.query') != 'null'
+    (stmt->'$.info.query') != 'null' and
+    (
+       from_json(stmt->>'$.info.qualified_name.path', '["VARCHAR"]').len() = 1
+       or error(format(
+         'Model `{1}` in file `{0}` specifies a catalog and/or schema name. These are not permitted.',
+         filename,
+         from_json(stmt->>'$.info.qualified_name.path', '["VARCHAR"]')
+           .apply(lambda s: quoted(s))
+           .array_to_string('.')
+       ))
+     )
 
   qualify
     count(*) over (partition by filename, rel_name)
