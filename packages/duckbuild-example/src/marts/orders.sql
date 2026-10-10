@@ -2,6 +2,8 @@ attach '../staging.sql';
 
 with
 
+  orders as (from staging.stg_orders),
+
   order_payment_methods as (
     /* see https://duckdb.org/docs/current/sql/statements/pivot. (note: resulting columns are "<payment_method>_amount".) */
     pivot staging.stg_payments

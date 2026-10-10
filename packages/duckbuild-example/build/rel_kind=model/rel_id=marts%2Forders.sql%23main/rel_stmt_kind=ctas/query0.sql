@@ -1,1 +1,0 @@
-CREATE TABLE main AS SELECT order_id, customer_id, order_date, status, COLUMNS('.*_total'), amount FROM ((orders LEFT JOIN order_payment_methods USING (order_id)) LEFT JOIN order_payments USING (order_id))

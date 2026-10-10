@@ -1,1 +1,0 @@
-{"rel_kind":"source","rel_id":"sources.sql#raw_customers","filename":"sources.sql","stmt_id":[0],"rel_qualname":"raw_customers","qualpath":null,"cte_info":null,"rel_ct_sql":"CREATE TABLE raw_customers(id INTEGER PRIMARY KEY, first_name text, last_name text);","rel_select_sql":null,"rel_ctas_sql":null}

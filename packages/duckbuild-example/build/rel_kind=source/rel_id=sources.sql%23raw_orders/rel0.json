@@ -1,1 +1,0 @@
-{"rel_kind":"source","rel_id":"sources.sql#raw_orders","filename":"sources.sql","stmt_id":[1],"rel_qualname":"raw_orders","qualpath":null,"cte_info":null,"rel_ct_sql":"CREATE TABLE raw_orders(id INTEGER PRIMARY KEY, user_id INTEGER, order_date date, status text, FOREIGN KEY (user_id) REFERENCES raw_customers(id));","rel_select_sql":null,"rel_ctas_sql":null}

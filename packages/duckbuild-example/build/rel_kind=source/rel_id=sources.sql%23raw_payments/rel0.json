@@ -1,1 +1,0 @@
-{"rel_kind":"source","rel_id":"sources.sql#raw_payments","filename":"sources.sql","stmt_id":[2],"rel_qualname":"raw_payments","qualpath":null,"cte_info":null,"rel_ct_sql":"CREATE TABLE raw_payments(id INTEGER PRIMARY KEY, order_id INTEGER, payment_method text, amount_cents INTEGER, FOREIGN KEY (order_id) REFERENCES raw_orders(id));","rel_select_sql":null,"rel_ctas_sql":null}
