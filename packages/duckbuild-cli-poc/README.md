@@ -4,6 +4,8 @@ A SQL-based proof-of-concept for duckbuild SQL compilation.
 
 To use, add this folder to `$PATH`, `cd` to the directory containing `duckbuild.toml` and `src/**.sql`, then run `duckbuild-compile.sql`. Your compiled SQL files should then show up in `build/`.
 
+Example build output generated from the current proof of concept is committed in [`duckbuild-example/build`](../duckbuild-example/build).
+
 ## Architecture
 
 `duckbuild-compile.sql` reads SQL source files from `$DUCKBUILD_SRC_PATH` (defaulting to `src` if unset), then uses DuckDB's builtin [`json_serialize_sql` function](https://duckdb.org/docs/current/data/json/sql_to_and_from_json) to parse the SQL statement(s) they contain.
