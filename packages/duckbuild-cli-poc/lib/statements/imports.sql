@@ -56,14 +56,7 @@ create temp table sql_import_validations as
   from validations
 ;
 
-.print
-.print Import errors:
+.mode jsonlines
 from sql_import_validations;
-.mode lines
 from sql_import_validations select error('Import errors!');
 .mode duckbox
-.print
-
-.print Imports:
-from sql_imports;
-.print

@@ -8,7 +8,6 @@
 .print
 
 .bail on
-.echo on
 
 /* when a model file contains a bare `select`, what name should it be associated with in the file? */
 set variable default_rel_name = 'main';

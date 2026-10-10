@@ -1,5 +1,3 @@
-select getvariable('src_dir');
-
 create table sql_files as (
   from read_text(getvariable('src_dir') || '/**/*.sql')
   select

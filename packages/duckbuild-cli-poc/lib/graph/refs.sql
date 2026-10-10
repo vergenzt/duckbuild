@@ -35,7 +35,6 @@ create table sql_refs_in_file as (
     )
 );
 
-
 create table sql_refs_imported as (
 
   from
