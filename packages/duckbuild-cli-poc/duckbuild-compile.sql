@@ -27,7 +27,7 @@ copy sql_relations to 'build' (
   filename_pattern 'rel', file_extension 'json'
 );
 
-copy (from sql_refs select 'model' as rel_kind, *) to 'build' (
+copy (from sql_refs select 'model' as rel_kind, * order by ref_id) to 'build' (
   format json,
   partition_by ('rel_kind', 'rel_id'), write_partition_columns false, overwrite_or_ignore,
   filename_pattern 'refs', file_extension 'ndjson'
