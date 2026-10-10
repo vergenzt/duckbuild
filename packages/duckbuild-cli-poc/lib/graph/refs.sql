@@ -73,3 +73,14 @@ create table sql_refs as
   )
   order by rel_id
 ;
+
+create table sql_refs_unresolved as
+  from sql_table_refs
+  join sql_relations using (rel_id)
+  anti join sql_refs using (rel_id, rel_table_ref_path)
+;
+
+.mode jsonlines
+from sql_refs_unresolved;
+from sql_refs_unresolved select error(format('Unresolved SQL table ref `{}` in file `{}` model `{}` at path `{}`!', ref_table_name, filename, rel_id, rel_table_ref_path));
+.mode duckbox
